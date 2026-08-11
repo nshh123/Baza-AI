@@ -158,12 +158,71 @@ with a permanent System User token:
 5. Swapped into `META_WHATSAPP_TOKEN` and restarted the server; re-verified the phone
    number lookup and tunnel both still worked.
 
+## 9. Moving off the local tunnel: production hosting
+
+The `trycloudflare.com` quick tunnel used for local testing has no uptime guarantee and
+dies whenever the tunnel process or the laptop it's running on stops — the reminder
+scheduler and every inbound message depend on it staying up, which isn't viable
+unattended. Replaced with:
+
+- **Render** (free web service) hosting the app itself. Connected to the
+  `github.com/nshh123/Baza-AI` repo, auto-deploying on push to `main`. Build command
+  `npm install && npm run build`, start command `npm start`. All secrets from `.env`
+  added as environment variables except `PORT`, which Render injects itself.
+- The Meta webhook Callback URL was updated from the tunnel URL to the permanent Render
+  URL (`https://baza-ai-dx2v.onrender.com/webhook`) — verified successfully, and a
+  follow-up "Hello" message confirmed the full pipeline works through Render with no
+  local process involved.
+
+One dashboard question worth noting: Meta's webhook config page offers an "Attach a
+client certificate to Webhook requests" toggle (mutual TLS). Left off — it's a separate
+authenticity mechanism from the `X-Hub-Signature-256` check already implemented (§5),
+and the server isn't configured to validate a client cert, so enabling it would add no
+real protection without matching server-side support.
+
+## 10. Keeping reminders firing on a sleeping free host
+
+Render's free tier spins the service down after a period of inactivity, which stops the
+internal `node-cron` tick along with everything else — reminders would silently stop
+firing whenever nobody was actively messaging the bot.
+
+Fix: added `POST /cron/check-reminders` (`src/index.ts`), guarded by a shared
+`CRON_SECRET` header check, that runs the same dispatch logic the internal cron uses
+(`checkAndDispatchReminders()`, extracted from `scheduler.ts` so both paths share one
+implementation). An external scheduler — [cron-job.org](https://cron-job.org) (free,
+1-minute intervals) — hits that endpoint every minute. The incoming request both wakes
+a sleeping Render instance and triggers the reminder check in the same call, so no
+separate "keep-alive ping" is needed.
+
+Verified end-to-end in production: sent "remind me in 2 minutes to test the cron job"
+over WhatsApp, watched the resulting `reminders` row in Supabase flip from `pending` to
+`sent` right on schedule, confirmed by the reminder actually arriving on WhatsApp.
+
+## 11. Bug found in production: duplicate reminder sends
+
+After the above went live, a single reminder was delivered **four times**. Root cause:
+`checkAndDispatchReminders()` fetched all due (`pending`) reminders, sent each one, and
+only *then* marked it `sent` — no atomic claim in between. Render's free tier can take
+tens of seconds to wake from a cold start, longer than cron-job.org's 1-minute interval,
+so multiple triggered runs ended up overlapping in-flight. Each overlapping run saw the
+same reminder as still `pending` before any of them had finished marking it `sent`, so
+each sent it independently — the same class of bug already fixed for webhook messages
+in §6, just not yet applied to reminders.
+
+Fix: `claimReminder()` in `supabase.ts` now does a conditional update
+(`UPDATE reminders SET status='sent' WHERE id=? AND status='pending'`) before sending;
+only the run that actually flips the row wins the claim, and losers skip sending
+entirely. A failed send reverts the claim back to `pending` (`revertReminderToPending()`)
+so it retries on the next tick rather than being lost. Verified by firing 4 concurrent
+claim attempts at the same test reminder — exactly 1 won.
+
 ## Where things stand
 
 - Webhook signature verification and message dedup are both live and tested.
-- Access token no longer expires.
-- Full pipeline (WhatsApp → webhook → Gemini → Supabase → WhatsApp reply) confirmed
-  working with real messages.
-- Still open, lower priority: the local dev tunnel (`trycloudflare.com`) has no uptime
-  guarantee and isn't meant for anything beyond testing — a stable host/tunnel is
-  needed before this goes further than local development.
+- Access token no longer expires (permanent System User token).
+- Hosted permanently on Render, auto-deploying from `main` — no local process required.
+- Reminders keep firing while the host sleeps, via an external cron trigger, with
+  duplicate-send protection for overlapping runs.
+- Full pipeline (WhatsApp → webhook → Gemini → Supabase → WhatsApp reply, and the
+  reminder dispatch path) confirmed working entirely in production, with no dependency
+  on the local machine.
