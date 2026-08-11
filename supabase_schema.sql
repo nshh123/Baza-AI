@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS reminders (
     message TEXT NOT NULL,
     remind_at TIMESTAMP WITH TIME ZONE NOT NULL,
     status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'cancelled')),
+    recurrence TEXT CHECK (recurrence IS NULL OR recurrence IN ('daily', 'weekly', 'monthly')),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 

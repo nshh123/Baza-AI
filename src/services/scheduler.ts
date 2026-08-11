@@ -1,5 +1,5 @@
 import cron from 'node-cron';
-import { getDueReminders, claimReminder, revertReminderToPending } from './supabase';
+import { getDueReminders, claimReminder, revertReminderToPending, rescheduleRecurringReminder } from './supabase';
 import { sendWhatsAppMessage } from './whatsapp';
 
 /**
@@ -27,11 +27,15 @@ export async function checkAndDispatchReminders(): Promise<number> {
         continue;
       }
 
-      const reminderText = `⏰ *REMINDER!*\n\n${reminder.message}`;
+      const recurrenceSuffix = reminder.recurrence ? `\n\n_(repeats ${reminder.recurrence})_` : '';
+      const reminderText = `⏰ *REMINDER!*\n\n${reminder.message}${recurrenceSuffix}`;
       const sentSuccess = await sendWhatsAppMessage(recipientPhone, reminderText);
 
       if (sentSuccess) {
         console.log(`✅ Sent reminder "${reminder.message}" to ${recipientPhone}`);
+        if (reminder.recurrence) {
+          await rescheduleRecurringReminder(reminder.id!, reminder.recurrence, reminder.remind_at);
+        }
       } else {
         console.error(`❌ Failed to send reminder "${reminder.message}" to ${recipientPhone}`);
         await revertReminderToPending(reminder.id!); // retry on the next tick

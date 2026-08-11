@@ -124,11 +124,22 @@ export async function handleWebhookEvent(req: Request, res: Response): Promise<v
       } else {
         replyText = '⚠️ Sorry, I could not process your voice note. Please try sending it again or type your message!';
       }
+    }
+    // 4. Process Image Messages
+    else if (message.type === 'image' && message.image) {
+      console.log(`🖼️ Downloading image media (ID: ${message.image.id})...`);
+      const mediaData = await getWhatsAppMediaBuffer(message.image.id);
+
+      if (mediaData) {
+        replyText = await processUserMessage(user, message.image.caption, mediaData.buffer, mediaData.mimeType);
+      } else {
+        replyText = '⚠️ Sorry, I could not process your image. Please try sending it again or describe what you need in text!';
+      }
     } else {
-      replyText = `I received your ${message.type} message! Currently I work best with text messages and voice notes. Feel free to ask me anything!`;
+      replyText = `I received your ${message.type} message! Currently I work best with text messages, voice notes, and images. Feel free to ask me anything!`;
     }
 
-    // 4. Send response back to sender on WhatsApp
+    // 5. Send response back to sender on WhatsApp
     if (replyText) {
       await sendWhatsAppMessage(senderPhone, replyText);
     }

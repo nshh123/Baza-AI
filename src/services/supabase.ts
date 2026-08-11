@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { UserProfile, ConversationMessage, Memory, Task, Reminder } from '../types';
+import { guessTimezoneFromPhone } from '../utils/timezone';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
@@ -31,7 +32,7 @@ export async function getOrCreateUser(phoneNumber: string, name?: string): Promi
 
     const { data: newUser, error: createError } = await supabase
       .from('users')
-      .insert({ phone_number: phoneNumber, name })
+      .insert({ phone_number: phoneNumber, name, timezone: guessTimezoneFromPhone(phoneNumber) })
       .select()
       .single();
 
@@ -40,6 +41,18 @@ export async function getOrCreateUser(phoneNumber: string, name?: string): Promi
   } catch (error: any) {
     console.error('❌ Error in getOrCreateUser:', error.message);
     return null;
+  }
+}
+
+/**
+ * Update a user's timezone (IANA name), e.g. after they correct our best-effort guess.
+ */
+export async function updateUserTimezone(userId: string, timezone: string): Promise<void> {
+  if (!supabase) return;
+  try {
+    await supabase.from('users').update({ timezone }).eq('id', userId);
+  } catch (error: any) {
+    console.error('❌ Error updating user timezone:', error.message);
   }
 }
 
@@ -167,9 +180,38 @@ export async function getUserTasks(userId: string): Promise<Task[]> {
 }
 
 /**
- * Create a scheduled reminder
+ * Mark the user's active task(s) whose title matches (case-insensitive substring)
+ * as completed. Returns how many tasks were completed.
  */
-export async function createReminder(userId: string, message: string, remindAtISO: string): Promise<Reminder | null> {
+export async function completeTaskByTitle(userId: string, titleMatch: string): Promise<number> {
+  if (!supabase) return 0;
+  try {
+    const { data, error } = await supabase
+      .from('tasks')
+      .update({ status: 'completed' })
+      .eq('user_id', userId)
+      .neq('status', 'completed')
+      .ilike('title', `%${titleMatch}%`)
+      .select('id');
+
+    if (error) throw error;
+    return data ? data.length : 0;
+  } catch (error: any) {
+    console.error('❌ Error completing task:', error.message);
+    return 0;
+  }
+}
+
+/**
+ * Create a scheduled reminder. `recurrence` of 'daily' | 'weekly' | 'monthly' makes
+ * it repeat instead of firing once.
+ */
+export async function createReminder(
+  userId: string,
+  message: string,
+  remindAtISO: string,
+  recurrence?: 'daily' | 'weekly' | 'monthly'
+): Promise<Reminder | null> {
   if (!supabase) return null;
   try {
     const { data, error } = await supabase
@@ -179,6 +221,7 @@ export async function createReminder(userId: string, message: string, remindAtIS
         message,
         remind_at: remindAtISO,
         status: 'pending',
+        recurrence: recurrence || null,
       })
       .select()
       .single();
@@ -188,6 +231,76 @@ export async function createReminder(userId: string, message: string, remindAtIS
   } catch (error: any) {
     console.error('❌ Error creating reminder:', error.message);
     return null;
+  }
+}
+
+/**
+ * Fetch the user's active (pending) reminders, soonest first — used to give Gemini
+ * context so it can reference/cancel them conversationally.
+ */
+export async function getUserPendingReminders(userId: string): Promise<Reminder[]> {
+  if (!supabase) return [];
+  try {
+    const { data, error } = await supabase
+      .from('reminders')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('status', 'pending')
+      .order('remind_at', { ascending: true });
+
+    if (error) throw error;
+    return (data || []) as Reminder[];
+  } catch (error: any) {
+    console.error('❌ Error fetching pending reminders:', error.message);
+    return [];
+  }
+}
+
+/**
+ * Cancel the user's pending reminder(s) whose message matches (case-insensitive
+ * substring). Returns how many were cancelled.
+ */
+export async function cancelReminderByMessage(userId: string, messageMatch: string): Promise<number> {
+  if (!supabase) return 0;
+  try {
+    const { data, error } = await supabase
+      .from('reminders')
+      .update({ status: 'cancelled' })
+      .eq('user_id', userId)
+      .eq('status', 'pending')
+      .ilike('message', `%${messageMatch}%`)
+      .select('id');
+
+    if (error) throw error;
+    return data ? data.length : 0;
+  } catch (error: any) {
+    console.error('❌ Error cancelling reminder:', error.message);
+    return 0;
+  }
+}
+
+/**
+ * Reschedule a recurring reminder to its next occurrence after it's been sent,
+ * keeping it pending instead of leaving it sent permanently.
+ */
+export async function rescheduleRecurringReminder(
+  reminderId: string,
+  recurrence: 'daily' | 'weekly' | 'monthly',
+  previousRemindAtISO: string
+): Promise<void> {
+  if (!supabase) return;
+  try {
+    const next = new Date(previousRemindAtISO);
+    if (recurrence === 'daily') next.setUTCDate(next.getUTCDate() + 1);
+    else if (recurrence === 'weekly') next.setUTCDate(next.getUTCDate() + 7);
+    else if (recurrence === 'monthly') next.setUTCMonth(next.getUTCMonth() + 1);
+
+    await supabase
+      .from('reminders')
+      .update({ status: 'pending', remind_at: next.toISOString() })
+      .eq('id', reminderId);
+  } catch (error: any) {
+    console.error('❌ Error rescheduling recurring reminder:', error.message);
   }
 }
 

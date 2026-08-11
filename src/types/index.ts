@@ -38,6 +38,7 @@ export interface Reminder {
   message: string;
   remind_at: string;
   status: 'pending' | 'sent' | 'cancelled';
+  recurrence?: 'daily' | 'weekly' | 'monthly' | null;
   created_at?: string;
   users?: {
     phone_number: string;
@@ -57,6 +58,11 @@ export interface WhatsAppMessage {
   audio?: {
     id: string;
     mime_type: string;
+  };
+  image?: {
+    id: string;
+    mime_type: string;
+    caption?: string;
   };
 }
 
