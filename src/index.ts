@@ -9,10 +9,11 @@ dns.setDefaultResultOrder('ipv4first');
 dotenv.config();
 
 import { verifyWebhook, verifyWebhookSignature, handleWebhookEvent } from './controllers/webhook';
-import { initScheduler } from './services/scheduler';
+import { initScheduler, checkAndDispatchReminders } from './services/scheduler';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const CRON_SECRET = process.env.CRON_SECRET || '';
 
 // Body Parsing Middleware (captures the raw body so we can verify Meta's HMAC signature)
 app.use(express.json({
@@ -30,6 +31,18 @@ app.get('/', (req, res) => {
 // Meta WhatsApp Webhook Routes
 app.get('/webhook', verifyWebhook);
 app.post('/webhook', verifyWebhookSignature, handleWebhookEvent);
+
+// External cron trigger — lets a scheduler (e.g. cron-job.org) both wake a sleeping
+// free-tier host and check due reminders in the same request, since the internal
+// node-cron tick can't fire while the process is asleep.
+app.post('/cron/check-reminders', async (req, res) => {
+  if (!CRON_SECRET || req.header('x-cron-secret') !== CRON_SECRET) {
+    res.sendStatus(401);
+    return;
+  }
+  const dispatched = await checkAndDispatchReminders();
+  res.status(200).json({ dispatched });
+});
 
 // Start Server & Background Scheduler
 app.listen(PORT, () => {
