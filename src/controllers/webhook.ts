@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 import { WhatsAppWebhookPayload } from '../types';
-import { getOrCreateUser } from '../services/supabase';
+import { getOrCreateUser, claimMessageId } from '../services/supabase';
 import { processUserMessage } from '../services/gemini';
 import { sendWhatsAppMessage, getWhatsAppMediaBuffer } from '../services/whatsapp';
 
@@ -89,6 +89,13 @@ export async function handleWebhookEvent(req: Request, res: Response): Promise<v
     const contactName = value.contacts?.[0]?.profile?.name || 'Friend';
 
     console.log(`📩 Incoming message from ${contactName} (${senderPhone}) [Type: ${message.type}]`);
+
+    // Skip duplicate deliveries (Meta retries webhooks it couldn't confirm were received)
+    const isNewMessage = await claimMessageId(message.id);
+    if (!isNewMessage) {
+      console.log(`⏭️ Skipping duplicate webhook delivery for message ${message.id}`);
+      return;
+    }
 
     // 1. Fetch or register user in database
     const userProfile = await getOrCreateUser(senderPhone, contactName);

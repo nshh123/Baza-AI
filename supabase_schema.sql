@@ -50,6 +50,13 @@ CREATE TABLE IF NOT EXISTS reminders (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- 6. Processed Webhook Messages (Prevents double-processing if Meta retries a webhook delivery)
+CREATE TABLE IF NOT EXISTS processed_messages (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    message_id TEXT UNIQUE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
 -- Create Indexes for fast lookup
 CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone_number);
 CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id, created_at DESC);
@@ -62,4 +69,5 @@ ALTER TABLE conversations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE memories ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reminders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE processed_messages ENABLE ROW LEVEL SECURITY;
 

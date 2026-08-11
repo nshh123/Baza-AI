@@ -226,3 +226,22 @@ export async function markReminderSent(reminderId: string): Promise<void> {
     console.error('❌ Error updating reminder status:', error.message);
   }
 }
+
+/**
+ * Atomically claim a WhatsApp message ID before processing it.
+ * Returns true the first time a given ID is seen (safe to process), false if
+ * it's a duplicate delivery (e.g. Meta retried the webhook) that should be skipped.
+ */
+export async function claimMessageId(messageId: string): Promise<boolean> {
+  if (!supabase) return true;
+  try {
+    const { error } = await supabase.from('processed_messages').insert({ message_id: messageId });
+    if (!error) return true;
+    if (error.code === '23505') return false; // unique_violation -> already processed
+    console.error('❌ Error claiming message id:', error.message);
+    return true; // fail open: don't drop a legitimate message over an unrelated DB error
+  } catch (error: any) {
+    console.error('❌ Error claiming message id:', error.message);
+    return true;
+  }
+}
