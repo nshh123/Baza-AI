@@ -1,5 +1,5 @@
 import cron from 'node-cron';
-import { getDueReminders, markReminderSent } from './supabase';
+import { getDueReminders, claimReminder, revertReminderToPending } from './supabase';
 import { sendWhatsAppMessage } from './whatsapp';
 
 /**
@@ -19,14 +19,22 @@ export async function checkAndDispatchReminders(): Promise<number> {
       const recipientPhone = reminder.users?.phone_number;
       if (!recipientPhone) continue;
 
+      // Claim before sending so overlapping runs (e.g. cron triggers stacking up
+      // during a slow cold start) can't both send the same reminder.
+      const claimed = await claimReminder(reminder.id!);
+      if (!claimed) {
+        console.log(`⏭️ Skipping reminder ${reminder.id} — already claimed by a concurrent run`);
+        continue;
+      }
+
       const reminderText = `⏰ *REMINDER!*\n\n${reminder.message}`;
       const sentSuccess = await sendWhatsAppMessage(recipientPhone, reminderText);
 
       if (sentSuccess) {
-        await markReminderSent(reminder.id!);
         console.log(`✅ Sent reminder "${reminder.message}" to ${recipientPhone}`);
       } else {
         console.error(`❌ Failed to send reminder "${reminder.message}" to ${recipientPhone}`);
+        await revertReminderToPending(reminder.id!); // retry on the next tick
       }
     }
 

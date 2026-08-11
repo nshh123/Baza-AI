@@ -213,17 +213,42 @@ export async function getDueReminders(): Promise<Reminder[]> {
 }
 
 /**
- * Mark reminder as sent
+ * Atomically claim a reminder before sending it, by conditionally flipping it
+ * pending -> sent only if it's still pending. Returns true if this call won the
+ * claim (safe to send), false if another concurrent run already claimed it
+ * (e.g. overlapping cron triggers during a slow cold start).
  */
-export async function markReminderSent(reminderId: string): Promise<void> {
-  if (!supabase) return;
+export async function claimReminder(reminderId: string): Promise<boolean> {
+  if (!supabase) return true;
   try {
-    await supabase
+    const { data, error } = await supabase
       .from('reminders')
       .update({ status: 'sent' })
-      .eq('id', reminderId);
+      .eq('id', reminderId)
+      .eq('status', 'pending')
+      .select('id');
+
+    if (error) {
+      console.error('❌ Error claiming reminder:', error.message);
+      return false; // fail closed: better to retry next tick than risk a duplicate send
+    }
+    return !!(data && data.length > 0);
   } catch (error: any) {
-    console.error('❌ Error updating reminder status:', error.message);
+    console.error('❌ Error claiming reminder:', error.message);
+    return false;
+  }
+}
+
+/**
+ * Revert a claimed reminder back to pending if the send itself failed,
+ * so it gets retried on the next scheduler tick instead of being lost.
+ */
+export async function revertReminderToPending(reminderId: string): Promise<void> {
+  if (!supabase) return;
+  try {
+    await supabase.from('reminders').update({ status: 'pending' }).eq('id', reminderId);
+  } catch (error: any) {
+    console.error('❌ Error reverting reminder status:', error.message);
   }
 }
 
