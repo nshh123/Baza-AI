@@ -1,6 +1,6 @@
 import cron from 'node-cron';
 import { getDueReminders, claimReminder, revertReminderToPending, rescheduleRecurringReminder } from './supabase';
-import { sendWhatsAppMessage } from './whatsapp';
+import { sendWhatsAppMessage, sendWhatsAppTemplate } from './whatsapp';
 
 /**
  * Check for due reminders and dispatch them over WhatsApp.
@@ -27,9 +27,20 @@ export async function checkAndDispatchReminders(): Promise<number> {
         continue;
       }
 
-      const recurrenceSuffix = reminder.recurrence ? `\n\n_(repeats ${reminder.recurrence})_` : '';
-      const reminderText = `⏰ *REMINDER!*\n\n${reminder.message}${recurrenceSuffix}`;
-      const sentSuccess = await sendWhatsAppMessage(recipientPhone, reminderText);
+      const recurrenceSuffix = reminder.recurrence ? ` (repeats ${reminder.recurrence})` : '';
+      const reminderMessage = `${reminder.message}${recurrenceSuffix}`;
+
+      // Reminders are business-initiated and may land well outside the 24-hour
+      // customer service window, where plain text gets rejected on production
+      // numbers. Try the approved template first; fall back to plain text if it
+      // isn't approved (yet, or ever gets un-approved) rather than failing outright.
+      let sentSuccess = await sendWhatsAppTemplate(recipientPhone, 'reminder_notification', 'en', {
+        reminder_message: reminderMessage,
+      });
+      if (!sentSuccess) {
+        const reminderText = `⏰ *REMINDER!*\n\n${reminderMessage}`;
+        sentSuccess = await sendWhatsAppMessage(recipientPhone, reminderText);
+      }
 
       if (sentSuccess) {
         console.log(`✅ Sent reminder "${reminder.message}" to ${recipientPhone}`);

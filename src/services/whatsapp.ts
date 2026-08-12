@@ -137,6 +137,64 @@ export async function sendWhatsAppButtons(
 }
 
 /**
+ * Send an approved WhatsApp message template with named parameters. Required for
+ * business-initiated messages (like reminders) sent outside the 24-hour customer
+ * service window, which the API rejects as plain text on production numbers.
+ * Returns false (rather than throwing) if the template isn't approved yet/anymore,
+ * so callers can fall back to a plain-text send.
+ */
+export async function sendWhatsAppTemplate(
+  toPhoneNumber: string,
+  templateName: string,
+  languageCode: string,
+  namedParameters: Record<string, string>
+): Promise<boolean> {
+  try {
+    if (!META_WHATSAPP_TOKEN || !META_PHONE_NUMBER_ID) {
+      console.warn('⚠️ Meta WhatsApp credentials not fully configured in environment variables.');
+      return false;
+    }
+
+    const url = `https://graph.facebook.com/v21.0/${META_PHONE_NUMBER_ID}/messages`;
+
+    const response = await axios.post(
+      url,
+      {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: toPhoneNumber,
+        type: 'template',
+        template: {
+          name: templateName,
+          language: { code: languageCode },
+          components: [
+            {
+              type: 'body',
+              parameters: Object.entries(namedParameters).map(([name, value]) => ({
+                type: 'text',
+                parameter_name: name,
+                text: value,
+              })),
+            },
+          ],
+        },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${META_WHATSAPP_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+    return response.status === 200 || response.status === 201;
+  } catch (error: any) {
+    console.error('❌ Error sending WhatsApp template message:', error?.response?.data || error.message);
+    return false;
+  }
+}
+
+/**
  * Mark an inbound message as read and show the "typing..." indicator in the chat
  * while we work on a reply. WhatsApp clears it automatically after ~25s or as soon
  * as the actual reply is sent, whichever comes first.
