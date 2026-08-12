@@ -1,9 +1,11 @@
 import { createClient } from '@supabase/supabase-js';
 import { UserProfile, ConversationMessage, Memory, Task, Reminder } from '../types';
-import { guessTimezoneFromPhone } from '../utils/timezone';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+
+// Default timezone for new users until they tell us (or the assistant infers) otherwise.
+const DEFAULT_TIMEZONE = 'Africa/Kigali';
 
 // Fallback dummy client if credentials not yet configured
 export const supabase = (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY)
@@ -11,13 +13,18 @@ export const supabase = (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY)
   : null;
 
 /**
- * Get existing user profile or create a new user profile by phone number
+ * Get existing user profile or create a new user profile by phone number.
+ * `isNewUser` tells the caller whether this account was just created, so it can
+ * greet first-time users appropriately.
  */
-export async function getOrCreateUser(phoneNumber: string, name?: string): Promise<UserProfile | null> {
+export async function getOrCreateUser(
+  phoneNumber: string,
+  name?: string
+): Promise<{ profile: UserProfile; isNewUser: boolean } | null> {
   if (!supabase) return null;
 
   try {
-    const { data: existingUser, error: findError } = await supabase
+    const { data: existingUser } = await supabase
       .from('users')
       .select('*')
       .eq('phone_number', phoneNumber)
@@ -27,17 +34,17 @@ export async function getOrCreateUser(phoneNumber: string, name?: string): Promi
       if (name && !existingUser.name) {
         await supabase.from('users').update({ name }).eq('id', existingUser.id);
       }
-      return existingUser as UserProfile;
+      return { profile: existingUser as UserProfile, isNewUser: false };
     }
 
     const { data: newUser, error: createError } = await supabase
       .from('users')
-      .insert({ phone_number: phoneNumber, name, timezone: guessTimezoneFromPhone(phoneNumber) })
+      .insert({ phone_number: phoneNumber, name, timezone: DEFAULT_TIMEZONE })
       .select()
       .single();
 
     if (createError) throw createError;
-    return newUser as UserProfile;
+    return { profile: newUser as UserProfile, isNewUser: true };
   } catch (error: any) {
     console.error('❌ Error in getOrCreateUser:', error.message);
     return null;

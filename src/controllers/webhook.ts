@@ -9,6 +9,10 @@ import { formatTaskList, formatReminderList } from '../utils/formatting';
 const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || 'my_secret_whatsapp_verify_token_123';
 const META_APP_SECRET = process.env.META_APP_SECRET || '';
 
+const WELCOME_MESSAGE = `👋 Hi, I'm *Baza AI* — your personal AI assistant, accessible anytime right here on WhatsApp!
+
+I can remember things for you, manage your tasks and reminders, answer questions, and more — just message me anytime, day or night. What can I help you with today?`;
+
 /**
  * Verify that incoming webhook POSTs are genuinely signed by Meta.
  * Compares the X-Hub-Signature-256 header against an HMAC-SHA256 of the raw request body,
@@ -99,14 +103,19 @@ export async function handleWebhookEvent(req: Request, res: Response): Promise<v
     }
 
     // 1. Fetch or register user in database
-    const userProfile = await getOrCreateUser(senderPhone, contactName);
-    const user = userProfile || {
+    const userResult = await getOrCreateUser(senderPhone, contactName);
+    const user = userResult?.profile || {
       id: '',
       phone_number: senderPhone,
       name: contactName,
-      timezone: 'UTC',
+      timezone: 'Africa/Kigali',
       created_at: new Date().toISOString(),
     };
+
+    // Greet brand-new users before handling whatever they actually sent
+    if (userResult?.isNewUser) {
+      await sendWhatsAppMessage(senderPhone, WELCOME_MESSAGE);
+    }
 
     let replyText = '';
     let replyButtons: Array<{ id: string; title: string }> | undefined;
