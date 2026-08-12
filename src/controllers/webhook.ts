@@ -3,7 +3,7 @@ import { Request, Response, NextFunction } from 'express';
 import { WhatsAppWebhookPayload } from '../types';
 import { getOrCreateUser, claimMessageId, getUserTasks, getUserPendingReminders } from '../services/supabase';
 import { processUserMessage } from '../services/gemini';
-import { sendWhatsAppMessage, sendWhatsAppButtons, getWhatsAppMediaBuffer } from '../services/whatsapp';
+import { sendWhatsAppMessage, sendWhatsAppButtons, sendTypingIndicator, getWhatsAppMediaBuffer } from '../services/whatsapp';
 import { formatTaskList, formatReminderList } from '../utils/formatting';
 
 const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || 'my_secret_whatsapp_verify_token_123';
@@ -100,6 +100,12 @@ export async function handleWebhookEvent(req: Request, res: Response): Promise<v
     if (!isNewMessage) {
       console.log(`⏭️ Skipping duplicate webhook delivery for message ${message.id}`);
       return;
+    }
+
+    // Show the typing indicator right away, in parallel with the (potentially slow)
+    // processing below, so the wait feels natural instead of silent.
+    if (message.type === 'text' || message.type === 'audio' || message.type === 'image') {
+      sendTypingIndicator(message.id);
     }
 
     // 1. Fetch or register user in database

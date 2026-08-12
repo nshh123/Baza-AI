@@ -137,6 +137,37 @@ export async function sendWhatsAppButtons(
 }
 
 /**
+ * Mark an inbound message as read and show the "typing..." indicator in the chat
+ * while we work on a reply. WhatsApp clears it automatically after ~25s or as soon
+ * as the actual reply is sent, whichever comes first.
+ */
+export async function sendTypingIndicator(inboundMessageId: string): Promise<void> {
+  try {
+    if (!META_WHATSAPP_TOKEN || !META_PHONE_NUMBER_ID) return;
+
+    const url = `https://graph.facebook.com/v21.0/${META_PHONE_NUMBER_ID}/messages`;
+
+    await axios.post(
+      url,
+      {
+        messaging_product: 'whatsapp',
+        status: 'read',
+        message_id: inboundMessageId,
+        typing_indicator: { type: 'text' },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${META_WHATSAPP_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+  } catch (error: any) {
+    console.error('❌ Error sending typing indicator:', error?.response?.data || error.message);
+  }
+}
+
+/**
  * Download media content (like audio voice notes) from Meta servers
  */
 export async function getWhatsAppMediaBuffer(mediaId: string): Promise<{ buffer: Buffer; mimeType: string } | null> {
