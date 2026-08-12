@@ -216,13 +216,227 @@ entirely. A failed send reverts the claim back to `pending` (`revertReminderToPe
 so it retries on the next tick rather than being lost. Verified by firing 4 concurrent
 claim attempts at the same test reminder — exactly 1 won.
 
+## 12. Filling in missing assistant capabilities
+
+Before opening the bot up to other users, reviewed the existing feature set and found
+two real gaps: tasks/reminders could be created but never completed or cancelled
+(despite the schema already supporting it), and `users.timezone` was declared but never
+actually set or used, so Gemini only ever saw a raw UTC timestamp.
+
+Added in one pass:
+- `complete_task` / `cancel_reminder` tools, matching by title/message substring
+  against the active list already given to Gemini as context.
+- Real per-user timezones: a phone-number-based default guess (later replaced, see
+  §17), the system prompt given the user's actual local time, and a `set_timezone`
+  tool so the user can correct it conversationally.
+- Recurring reminders (`daily` | `weekly` | `monthly`) — on dispatch, a recurring
+  reminder reschedules to its next occurrence instead of being left `sent`. Needed a
+  `reminders.recurrence` migration.
+- Image understanding — WhatsApp images downloaded and passed to Gemini the same way
+  voice notes already were (`processUserMessage`'s `audioBuffer` param generalized to
+  `mediaBuffer`, used for both).
+
+Discovered mid-testing: `gemini-flash-latest` currently resolves to `gemini-3.6-flash`,
+which has only a **20 request/day** free quota — unusable for more than one user.
+Switched the pinned model to `gemini-flash-lite-latest` (had quota available, and
+tracks Google's newest lite release rather than a hardcoded version, avoiding the
+hard-deprecation just hit on `gemini-2.0-flash`/`2.5-flash`).
+
+## 13. Two bugs found by real user testing
+
+- **Captionless images defaulted to describing instead of answering.** Sent a photo of
+  exam questions with a caption ("here you go, answer these") and it correctly solved
+  all four; sent one *without* a caption and it just described the image. Root cause
+  was in our own system prompt, which explicitly told Gemini to default to describing
+  when there's no caption — fixed to prioritize reading and answering/solving any
+  legible questions/problems regardless of caption.
+- **"Cancel my daily reminder" failed.** Traced to two things: (1) the actual trigger
+  was the model narrating "reminder set" without calling the tool at all — retested in
+  isolation and the underlying code was reliable (6/6 successful tool calls), so this
+  was logged as an occasional LLM slip and mitigated with an explicit prompt rule never
+  to claim an action without calling its tool; (2) a real, separate gap regardless:
+  `cancelReminderByMessage` only matched against the reminder's `message` text, not its
+  `recurrence` — "daily" doesn't appear in a message like "Stretch". Fixed to match
+  either field.
+
+## 14. WhatsApp's 4096-character limit
+
+A detailed answer to solved exam questions (6,288 characters) was generated
+successfully by Gemini and saved to conversation history, but silently failed to send
+— WhatsApp's Cloud API hard-rejects any `text.body` over 4096 characters (HTTP 400),
+with the only trace being a console error the user never saw. Fixed by having
+`sendWhatsAppMessage` split any over-limit message into multiple sequential messages,
+breaking at the last newline/space before the boundary where possible.
+
+## 15. UX polish: readable times, task due dates, quick-reply buttons
+
+- `src/utils/formatting.ts` — `formatFriendlyDateTime`/`formatTaskList`/
+  `formatReminderList`, so confirmations show "Wed, Aug 12, 6:00 PM" instead of a raw
+  UTC ISO string.
+- `add_task` gained an optional `due_date_iso`, interpreted relative to the user's
+  local time the same way reminder times are.
+- Adding a task or reminder now sends a WhatsApp quick-reply button ("Daily Plan" /
+  "My Reminders") alongside the confirmation. Tapping it is handled **deterministically**
+  in `webhook.ts` — a direct DB read + formatted reply, no Gemini call — both faster
+  and free-tier-friendlier. `processUserMessage` now returns `{ text, buttons? }`
+  instead of a bare string.
+
+## 16. Gemini congestion and a real latency fix
+
+Hit `503 UNAVAILABLE` ("currently experiencing high demand") from Gemini's free-tier
+API multiple times on plain, ordinary requests — confirmed transient by reproducing
+the identical request outside the congestion window and having it succeed in ~2s.
+Added `generateContentWithRetry()`: retries up to twice (1.5s, then 3s backoff)
+specifically on that failure signature.
+
+Separately (and independent of Gemini's mood): found every message was making 4
+Supabase reads — memories, conversation history, tasks, pending reminders — one after
+another before even calling Gemini, despite none of them depending on each other.
+Parallelized with `Promise.all`, cutting that phase to the latency of the slowest
+single read instead of their sum. A real, consistent latency win on every message.
+
+## 17. Default timezone, first-time welcome, consistent self-introduction
+
+- Replaced the phone-number-guessed timezone default with a fixed **Africa/Kigali**
+  default per explicit request; removed `guessTimezoneFromPhone` and its calling-code
+  table entirely (dead code once unused).
+- `getOrCreateUser` now reports `isNewUser`; brand-new users get a one-time welcome
+  message — *"I'm Baza AI — your personal AI assistant, accessible anytime right here
+  on WhatsApp!"* — sent before their actual first message is processed.
+- System prompt persona updated so Gemini answering "who are you" itself uses the same
+  framing consistently.
+
+## 18. Typing indicator
+
+Added `sendTypingIndicator()` — marks the inbound message read with a
+`typing_indicator` attached (Meta Cloud API), fired without blocking, in parallel with
+the (sometimes several-second) actual processing. Only fired for text/audio/image
+messages; button taps answer near-instantly and don't need it. Confirmed visible on a
+real device.
+
+## 19. App Review & Business Verification (in progress — see "Where things stand")
+
+Walked through moving off the 5-recipient sandbox test number toward letting anyone
+message the bot:
+
+- Registered a real production phone number under a **new** WhatsApp Business Account
+  ("Baza AI", WABA ID `1007180435703968`) — a different WABA from the original sandbox
+  one (`4508606849414563`) used everywhere in §1–§11. Number: `+250 782 278 790`,
+  Phone Number ID `1296582793529806`.
+- The number just needed to receive **one SMS OTP** during registration — no
+  smartphone or WhatsApp install required on the device at all; a cheap prepaid SIM in
+  a basic phone was enough. After that, Cloud API hosts the number entirely
+  server-side.
+- Registered for Cloud API with a 2-step verification PIN, then subscribed webhooks.
+  Checked whether this WABA had the same "subscribed to the wrong app" quirk as §3 —
+  it didn't; correctly auto-subscribed to our own app this time.
+- Added a payment method (required even to stay within free tiers, as an anti-abuse
+  measure — adding one does not itself trigger a charge). No spending-limit/threshold
+  option was found on this billing surface, unlike Meta Ads Manager.
+- Pricing model as currently understood: regular replies (the bot responding to
+  whatever a user sends) get 1,000 free user-initiated conversations/month; reminders
+  and the daily digest are *business-initiated* and fall into a separate, smaller-free-
+  allowance bucket.
+- **Important compliance gap found**: WhatsApp's Cloud API rejects plain-text
+  business-initiated messages sent more than 24 hours after the user's last message on
+  *production* numbers. Reminders had only ever worked in testing because the sandbox
+  test number doesn't enforce this — switching to the real number would have started
+  silently failing any reminder/digest sent outside that window. See §20 for the fix.
+- Created the `reminder_notification` Utility template via the dashboard. Two
+  validation errors along the way, both fixed by editing the body text directly:
+  variables must be named/lowercase-with-underscores (`{{reminder_message}}`, not
+  positional `{{1}}`), and a variable can't be the last thing in the template (added
+  trailing "— sent by Baza AI 🤖" text after it).
+- Business Verification: business type "Private Company"; caught that the *legal*
+  registered name belongs in "Business name" (Meta looks this up against official
+  registry records) and the public-facing/trade name belongs in "Alternative business
+  name" — had them backwards (legal name is "BazaDevSpace", trade name "Baza AI").
+  Website field rejected the free `baza-ai-tech.vercel.app` subdomain (Meta requires an
+  owned domain); user to buy a cheap domain and set up forwarding to the existing
+  Vercel app rather than rebuilding anything. Government business registration is
+  still pending as of this writing, which may block verification clearing until it's
+  approved — but this **does not block current operation**: an unverified WABA still
+  works on Meta's default messaging tier.
+
+## 20. Template-based sending with graceful fallback
+
+Added `sendWhatsAppTemplate()` to `whatsapp.ts` (sends a named-parameter-format
+template). `checkAndDispatchReminders` now tries the `reminder_notification` template
+first and falls back to the existing plain-text send if it fails (not yet approved, or
+ever un-approved later) — safe to deploy regardless of the template's review status,
+and starts using it silently the moment Meta approves it, no second deploy needed.
+Verified end-to-end: template attempt correctly fails without throwing while pending,
+falls back, reminder dispatched and marked `sent` successfully.
+
+## 21. Daily digest — the standout feature
+
+With remaining session time, built one feature meant to make Baza AI feel like a real
+assistant rather than a reactive chatbot: a proactive "good morning" summary sent at
+**8am in each user's own local time**, listing their active tasks and reminders.
+Skips (but still marks as checked) users with nothing active, so nobody gets an empty
+digest every morning.
+
+- `users.last_digest_date` migration (`YYYY-MM-DD` of the last local date a digest was
+  sent) prevents double-sends if cron ticks overlap.
+- `getLocalDateAndHour(timezone)` (new, in `utils/timezone.ts`) computes a user's
+  current local date/hour cleanly via `Intl`, avoiding DST/offset arithmetic bugs.
+- `checkAndSendDailyDigests()` (`src/services/digest.ts`) checks every user each cron
+  tick; fires once per user per local day when their local hour hits 8.
+- New `daily_digest` template created **directly via the Business Management API**
+  (`POST /{WABA-ID}/message_templates`) rather than the dashboard — Meta's
+  auto-classifier tagged it **Marketing** instead of the requested Utility (doesn't
+  block sending, just a smaller free allowance; could delete/recreate with adjusted
+  wording later if that matters at scale). Same template-then-fallback pattern as §20.
+- Wired into the same `runScheduledTasks()` both the internal cron and the external
+  `/cron/check-reminders` endpoint already call — no new scheduled job needed.
+
+Verified fully end-to-end against the real account: temporarily switched its timezone
+to a real UTC+12 zone genuinely at 8am, seeded a task and a reminder, ran the real
+check, confirmed a real digest was delivered (via the plain-text fallback, template
+still pending) and `last_digest_date` recorded correctly, then reverted the account to
+its exact original state with no leftover data.
+
 ## Where things stand
 
-- Webhook signature verification and message dedup are both live and tested.
-- Access token no longer expires (permanent System User token).
-- Hosted permanently on Render, auto-deploying from `main` — no local process required.
-- Reminders keep firing while the host sleeps, via an external cron trigger, with
-  duplicate-send protection for overlapping runs.
-- Full pipeline (WhatsApp → webhook → Gemini → Supabase → WhatsApp reply, and the
-  reminder dispatch path) confirmed working entirely in production, with no dependency
-  on the local machine.
+**Live and working in production** (Render, auto-deploying from `main`, no local
+process required):
+- Conversation over text, voice notes, and images; long-term memory; tasks (with due
+  dates, completion) and reminders (one-time and recurring, cancellable, matched by
+  content or recurrence word).
+- Timezone-aware scheduling, defaulting new users to Africa/Kigali until corrected.
+- Human-readable confirmations, quick-reply buttons for viewing tasks/reminders, a
+  typing indicator, and message chunking past WhatsApp's 4096-char limit.
+- Resilience: webhook signature verification, message dedup, reminder-claim dedup
+  (prevents duplicate sends from overlapping cron runs), Gemini retry-on-congestion,
+  parallelized context fetching.
+- A proactive daily digest at 8am local time per user.
+- Reminders and the daily digest both attempt an approved WhatsApp template first and
+  gracefully fall back to plain text — safe regardless of template approval status.
+
+**Mid-way through Meta App Review / Business Verification — the concrete unfinished
+pieces for whoever picks this up next:**
+
+1. **The live bot has NOT been cut over to the new production number yet.**
+   `.env`'s `META_PHONE_NUMBER_ID` still points at the original sandbox test number.
+   The new number (`+250 782 278 790`, Phone Number ID `1296582793529806`, WABA
+   `1007180435703968`) is registered, 2FA-verified, webhook-subscribed, and confirmed
+   receiving correctly (a real message to it triggered our webhook; the reply just
+   still comes from the old number since that's what's configured). **To complete the
+   cutover**: update `META_PHONE_NUMBER_ID` to `1296582793529806` in `.env`/Render's
+   environment variables and redeploy.
+2. **Two message templates awaiting Meta review**: `reminder_notification` and
+   `daily_digest`. Check status any time with:
+   ```bash
+   curl "https://graph.facebook.com/v21.0/1007180435703968/message_templates" \
+     -H "Authorization: Bearer <token>"
+   ```
+   No code changes needed regardless of outcome — both already fall back to plain text
+   safely.
+3. **Business Verification** is submitted but likely blocked on: (a) the government
+   business registration for "BazaDevSpace" still being pending approval, (b) needing
+   a real owned domain for the website field (user was buying one next).
+4. **Not yet explored in this session**: whether the app needs to be explicitly
+   switched from Meta's "Development" mode to "Live" mode in the App Dashboard once
+   verification clears, to allow messaging from users who aren't app admins/testers/
+   developers. Worth checking Meta's current docs/UI for this app specifically before
+   assuming App Review is fully done once the above items clear.
