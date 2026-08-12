@@ -140,6 +140,29 @@ const getDailyPlanDeclaration: FunctionDeclaration = {
   },
 };
 
+/**
+ * Retry a Gemini call on transient "high demand" (503 UNAVAILABLE) failures with
+ * a short backoff. The free-tier API occasionally rejects requests this way under
+ * load even when a retry a couple seconds later succeeds fine.
+ */
+async function generateContentWithRetry(params: Parameters<GoogleGenAI['models']['generateContent']>[0], maxRetries = 2) {
+  let lastError: any;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await ai!.models.generateContent(params);
+    } catch (error: any) {
+      lastError = error;
+      const isRetryable = /UNAVAILABLE|"code":\s*503|high demand/i.test(error?.message || '');
+      if (!isRetryable || attempt === maxRetries) throw error;
+
+      const delayMs = 1500 * (attempt + 1);
+      console.warn(`⚠️ Gemini call failed (attempt ${attempt + 1}/${maxRetries + 1}, likely transient high demand), retrying in ${delayMs}ms...`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  throw lastError;
+}
+
 export interface AssistantReply {
   text: string;
   /** Quick-reply buttons to show after the text (e.g. "View Daily Plan"), if any. */
@@ -244,7 +267,7 @@ ${reminderContext}`;
     }
 
     // 3. Call Gemini API
-    const response = await ai.models.generateContent({
+    const response = await generateContentWithRetry({
       model: 'gemini-flash-lite-latest',
       contents,
       config: {
