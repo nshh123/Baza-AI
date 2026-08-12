@@ -3,18 +3,40 @@ import axios from 'axios';
 const META_WHATSAPP_TOKEN = process.env.META_WHATSAPP_TOKEN || '';
 const META_PHONE_NUMBER_ID = process.env.META_PHONE_NUMBER_ID || '';
 
-/**
- * Send a WhatsApp text message to a specific phone number using Meta Cloud API
- */
-export async function sendWhatsAppMessage(toPhoneNumber: string, textContent: string): Promise<boolean> {
-  try {
-    if (!META_WHATSAPP_TOKEN || !META_PHONE_NUMBER_ID) {
-      console.warn('⚠️ Meta WhatsApp credentials not fully configured in environment variables.');
-      return false;
-    }
+// WhatsApp Cloud API hard-rejects any text.body over this length (HTTP 400).
+const WHATSAPP_MAX_MESSAGE_LENGTH = 4096;
 
+/**
+ * Split a long message into WhatsApp-sized chunks, breaking at the last newline
+ * (or space, or a hard cut as a last resort) before the limit so words/paragraphs
+ * aren't split mid-way where avoidable.
+ */
+function chunkMessage(text: string, maxLength: number = WHATSAPP_MAX_MESSAGE_LENGTH): string[] {
+  if (text.length <= maxLength) return [text];
+
+  const chunks: string[] = [];
+  let remaining = text;
+
+  while (remaining.length > maxLength) {
+    let splitIndex = remaining.lastIndexOf('\n', maxLength);
+    if (splitIndex <= 0) splitIndex = remaining.lastIndexOf(' ', maxLength);
+    if (splitIndex <= 0) splitIndex = maxLength;
+
+    chunks.push(remaining.slice(0, splitIndex).trim());
+    remaining = remaining.slice(splitIndex).trim();
+  }
+  if (remaining) chunks.push(remaining);
+
+  return chunks;
+}
+
+/**
+ * Send a single WhatsApp text message chunk (must already be within the length limit).
+ */
+async function sendSingleWhatsAppMessage(toPhoneNumber: string, textContent: string): Promise<boolean> {
+  try {
     const url = `https://graph.facebook.com/v21.0/${META_PHONE_NUMBER_ID}/messages`;
-    
+
     const response = await axios.post(
       url,
       {
@@ -40,6 +62,28 @@ export async function sendWhatsAppMessage(toPhoneNumber: string, textContent: st
     console.error('❌ Error sending WhatsApp message:', error?.response?.data || error.message);
     return false;
   }
+}
+
+/**
+ * Send a WhatsApp text message to a specific phone number using Meta Cloud API.
+ * Messages over WhatsApp's 4096-character limit are automatically split into
+ * multiple sequential messages instead of being rejected outright.
+ */
+export async function sendWhatsAppMessage(toPhoneNumber: string, textContent: string): Promise<boolean> {
+  if (!META_WHATSAPP_TOKEN || !META_PHONE_NUMBER_ID) {
+    console.warn('⚠️ Meta WhatsApp credentials not fully configured in environment variables.');
+    return false;
+  }
+
+  const chunks = chunkMessage(textContent);
+  let allSucceeded = true;
+
+  for (const chunk of chunks) {
+    const sent = await sendSingleWhatsAppMessage(toPhoneNumber, chunk);
+    if (!sent) allSucceeded = false;
+  }
+
+  return allSucceeded;
 }
 
 /**
