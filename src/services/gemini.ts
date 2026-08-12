@@ -183,11 +183,16 @@ export async function processUserMessage(
   }
 
   try {
-    // 1. Fetch user memories, recent history, tasks, and active reminders
-    const memories = user.id ? await getUserMemories(user.id) : [];
-    const recentHistory = user.id ? await getRecentConversations(user.id, 8) : [];
-    const tasks = user.id ? await getUserTasks(user.id) : [];
-    const pendingReminders = user.id ? await getUserPendingReminders(user.id) : [];
+    // 1. Fetch user memories, recent history, tasks, and active reminders (in parallel —
+    // these four reads are independent, no reason to pay their latency sequentially)
+    const [memories, recentHistory, tasks, pendingReminders] = user.id
+      ? await Promise.all([
+          getUserMemories(user.id),
+          getRecentConversations(user.id, 8),
+          getUserTasks(user.id),
+          getUserPendingReminders(user.id),
+        ])
+      : [[], [], [], []];
 
     const timezone = user.timezone || 'UTC';
     const nowISO = new Date().toISOString();
