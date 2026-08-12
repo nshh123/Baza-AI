@@ -257,22 +257,36 @@ export async function getUserPendingReminders(userId: string): Promise<Reminder[
 }
 
 /**
- * Cancel the user's pending reminder(s) whose message matches (case-insensitive
- * substring). Returns how many were cancelled.
+ * Cancel the user's pending reminder(s) matching a case-insensitive substring
+ * against either the reminder's message or its recurrence (e.g. "daily" matches
+ * a daily reminder even if that word never appears in the message text).
+ * Returns how many were cancelled.
  */
 export async function cancelReminderByMessage(userId: string, messageMatch: string): Promise<number> {
   if (!supabase) return 0;
   try {
-    const { data, error } = await supabase
+    const { data: candidates, error: fetchError } = await supabase
+      .from('reminders')
+      .select('id, message, recurrence')
+      .eq('user_id', userId)
+      .eq('status', 'pending');
+
+    if (fetchError) throw fetchError;
+
+    const needle = messageMatch.toLowerCase();
+    const matchingIds = (candidates || [])
+      .filter((r) => r.message.toLowerCase().includes(needle) || (r.recurrence && r.recurrence.toLowerCase().includes(needle)))
+      .map((r) => r.id);
+
+    if (matchingIds.length === 0) return 0;
+
+    const { error: updateError } = await supabase
       .from('reminders')
       .update({ status: 'cancelled' })
-      .eq('user_id', userId)
-      .eq('status', 'pending')
-      .ilike('message', `%${messageMatch}%`)
-      .select('id');
+      .in('id', matchingIds);
 
-    if (error) throw error;
-    return data ? data.length : 0;
+    if (updateError) throw updateError;
+    return matchingIds.length;
   } catch (error: any) {
     console.error('❌ Error cancelling reminder:', error.message);
     return 0;

@@ -70,7 +70,7 @@ const cancelReminderDeclaration: FunctionDeclaration = {
     properties: {
       message_match: {
         type: Type.STRING,
-        description: 'Text to match against the reminder\'s message (case-insensitive substring). Use wording from the ACTIVE REMINDERS list below.',
+        description: 'Text to match (case-insensitive substring) against either the reminder\'s message OR its recurrence word ("daily"/"weekly"/"monthly"). E.g. pass "daily" to match a reminder described as repeating daily, even if that word isn\'t in its message. Use wording from the ACTIVE REMINDERS list below.',
       },
     },
     required: ['message_match'],
@@ -177,7 +177,8 @@ YOUR CAPABILITIES & INSTRUCTIONS:
 4. When setting reminders, interpret times the user gives (e.g. "6pm", "tomorrow morning") relative to their Local Date & Time above, then convert to the equivalent UTC ISO timestamp for \`remind_at_iso\`. If the user asks for a repeating reminder ("every day", "weekly", etc.), set \`recurrence\` accordingly.
 5. If the user mentions where they live, or corrects an assumption about their timezone, call \`set_timezone\` with the correct IANA name so future reminders stay accurate.
 6. When the user wants to cancel a reminder or complete a task, match it against the lists below and call the matching tool.
-7. If sent an image, look at it and respond helpfully to whatever the user is asking (or, if no caption, describe what's useful about it).
+7. If sent an image, actively read anything legible in it. If it contains questions, problems, forms, or instructions — answer or solve them directly, even with no caption; don't just describe the image when there's answerable content in it. Only fall back to a plain description if there's genuinely nothing to answer or act on.
+8. Never claim you've set a reminder, added/completed a task, saved a memory, or changed a setting unless you actually called the matching tool in this turn — if you're not calling a tool, don't describe having done its action.
 
 USER MEMORIES:
 ${memoryContext}
@@ -204,7 +205,7 @@ ${reminderContext}`;
       const isImage = mimeType.startsWith('image/');
       const base64Media = mediaBuffer.toString('base64');
       const fallbackPrompt = isImage
-        ? 'The user sent an image. Look at it and respond helpfully, calling tools if relevant.'
+        ? 'The user sent an image with no caption. If it contains questions, problems, a form, or instructions, read and answer/solve them directly. Otherwise describe what\'s useful about it and offer help.'
         : 'The user sent a voice note. Listen to the audio, understand their intent, transcribe/answer as needed, and call appropriate tools if requested.';
       contents.push({
         role: 'user',
