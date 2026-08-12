@@ -102,14 +102,15 @@ export async function handleWebhookEvent(req: Request, res: Response): Promise<v
       return;
     }
 
-    // Show the typing indicator right away, in parallel with the (potentially slow)
-    // processing below, so the wait feels natural instead of silent. WhatsApp clears
-    // it after 25s on its own, but Gemini congestion can push replies well past that
-    // — so refresh it every 20s (safely under the cap) for as long as we're still
-    // working, instead of letting it lapse into a silent gap before the reply.
+    // Show the typing indicator right away, before any processing below, so it's
+    // guaranteed to reach WhatsApp before the reply does — if this were fired off
+    // without waiting, a fast reply (e.g. to "hello") could reach the Graph API
+    // first and the indicator would never visibly appear. WhatsApp clears it after
+    // 25s on its own, but Gemini congestion can push replies well past that — so
+    // refresh it every 20s (safely under the cap) for as long as we're still working.
     let typingIntervalId: NodeJS.Timeout | undefined;
     if (message.type === 'text' || message.type === 'audio' || message.type === 'image') {
-      sendTypingIndicator(message.id);
+      await sendTypingIndicator(message.id);
       typingIntervalId = setInterval(() => sendTypingIndicator(message.id), 20000);
     }
 

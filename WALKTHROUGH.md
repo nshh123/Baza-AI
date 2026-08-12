@@ -396,6 +396,21 @@ check, confirmed a real digest was delivered (via the plain-text fallback, templ
 still pending) and `last_digest_date` recorded correctly, then reverted the account to
 its exact original state with no leftover data.
 
+## 22. Typing indicator missing on fast replies
+
+User reported the typing indicator sometimes didn't show at all — distinct from the
+25s keep-alive fix in the prior commit (§18), this happened even on the *first*
+reply, and stood out most on quick queries like "hello". Root cause:
+`sendTypingIndicator()` in `webhook.ts` was fired without `await`, racing against
+`getOrCreateUser` + `processUserMessage` + `sendWhatsAppMessage`. For a fast reply,
+the actual message could reach the Graph API before the typing-indicator request had
+landed, so the client either never rendered it or the reply arrived and immediately
+superseded it.
+
+Fix: `await sendTypingIndicator(message.id)` for the initial call before any
+processing starts, guaranteeing it's registered with WhatsApp first regardless of how
+quickly the reply is generated. The 20s keep-alive interval is unchanged.
+
 ## Where things stand
 
 **Live and working in production** (Render, auto-deploying from `main`, no local
