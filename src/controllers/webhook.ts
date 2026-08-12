@@ -103,9 +103,14 @@ export async function handleWebhookEvent(req: Request, res: Response): Promise<v
     }
 
     // Show the typing indicator right away, in parallel with the (potentially slow)
-    // processing below, so the wait feels natural instead of silent.
+    // processing below, so the wait feels natural instead of silent. WhatsApp clears
+    // it after 25s on its own, but Gemini congestion can push replies well past that
+    // — so refresh it every 20s (safely under the cap) for as long as we're still
+    // working, instead of letting it lapse into a silent gap before the reply.
+    let typingIntervalId: NodeJS.Timeout | undefined;
     if (message.type === 'text' || message.type === 'audio' || message.type === 'image') {
       sendTypingIndicator(message.id);
+      typingIntervalId = setInterval(() => sendTypingIndicator(message.id), 20000);
     }
 
     // 1. Fetch or register user in database
@@ -126,53 +131,57 @@ export async function handleWebhookEvent(req: Request, res: Response): Promise<v
     let replyText = '';
     let replyButtons: Array<{ id: string; title: string }> | undefined;
 
-    // 2. Process quick-reply button taps (handled deterministically, no Gemini call needed)
-    if (message.type === 'interactive' && message.interactive?.button_reply) {
-      const buttonId = message.interactive.button_reply.id;
-      const timezone = user.timezone || 'UTC';
+    try {
+      // 2. Process quick-reply button taps (handled deterministically, no Gemini call needed)
+      if (message.type === 'interactive' && message.interactive?.button_reply) {
+        const buttonId = message.interactive.button_reply.id;
+        const timezone = user.timezone || 'UTC';
 
-      if (buttonId === 'view_tasks' && user.id) {
-        const tasks = await getUserTasks(user.id);
-        replyText = `📋 *Your Current Daily Plan:*\n${formatTaskList(tasks, timezone)}`;
-      } else if (buttonId === 'view_reminders' && user.id) {
-        const reminders = await getUserPendingReminders(user.id);
-        replyText = `⏰ *Your Active Reminders:*\n${formatReminderList(reminders, timezone)}`;
+        if (buttonId === 'view_tasks' && user.id) {
+          const tasks = await getUserTasks(user.id);
+          replyText = `📋 *Your Current Daily Plan:*\n${formatTaskList(tasks, timezone)}`;
+        } else if (buttonId === 'view_reminders' && user.id) {
+          const reminders = await getUserPendingReminders(user.id);
+          replyText = `⏰ *Your Active Reminders:*\n${formatReminderList(reminders, timezone)}`;
+        }
       }
-    }
-    // 3. Process Text Messages
-    else if (message.type === 'text' && message.text) {
-      const textContent = message.text.body;
-      const result = await processUserMessage(user, textContent);
-      replyText = result.text;
-      replyButtons = result.buttons;
-    }
-    // 4. Process Voice Note Audio Messages
-    else if (message.type === 'audio' && message.audio) {
-      console.log(`🎙️ Downloading voice note media (ID: ${message.audio.id})...`);
-      const mediaData = await getWhatsAppMediaBuffer(message.audio.id);
-
-      if (mediaData) {
-        const result = await processUserMessage(user, undefined, mediaData.buffer, mediaData.mimeType);
+      // 3. Process Text Messages
+      else if (message.type === 'text' && message.text) {
+        const textContent = message.text.body;
+        const result = await processUserMessage(user, textContent);
         replyText = result.text;
         replyButtons = result.buttons;
-      } else {
-        replyText = '⚠️ Sorry, I could not process your voice note. Please try sending it again or type your message!';
       }
-    }
-    // 5. Process Image Messages
-    else if (message.type === 'image' && message.image) {
-      console.log(`🖼️ Downloading image media (ID: ${message.image.id})...`);
-      const mediaData = await getWhatsAppMediaBuffer(message.image.id);
+      // 4. Process Voice Note Audio Messages
+      else if (message.type === 'audio' && message.audio) {
+        console.log(`🎙️ Downloading voice note media (ID: ${message.audio.id})...`);
+        const mediaData = await getWhatsAppMediaBuffer(message.audio.id);
 
-      if (mediaData) {
-        const result = await processUserMessage(user, message.image.caption, mediaData.buffer, mediaData.mimeType);
-        replyText = result.text;
-        replyButtons = result.buttons;
-      } else {
-        replyText = '⚠️ Sorry, I could not process your image. Please try sending it again or describe what you need in text!';
+        if (mediaData) {
+          const result = await processUserMessage(user, undefined, mediaData.buffer, mediaData.mimeType);
+          replyText = result.text;
+          replyButtons = result.buttons;
+        } else {
+          replyText = '⚠️ Sorry, I could not process your voice note. Please try sending it again or type your message!';
+        }
       }
-    } else {
-      replyText = `I received your ${message.type} message! Currently I work best with text messages, voice notes, and images. Feel free to ask me anything!`;
+      // 5. Process Image Messages
+      else if (message.type === 'image' && message.image) {
+        console.log(`🖼️ Downloading image media (ID: ${message.image.id})...`);
+        const mediaData = await getWhatsAppMediaBuffer(message.image.id);
+
+        if (mediaData) {
+          const result = await processUserMessage(user, message.image.caption, mediaData.buffer, mediaData.mimeType);
+          replyText = result.text;
+          replyButtons = result.buttons;
+        } else {
+          replyText = '⚠️ Sorry, I could not process your image. Please try sending it again or describe what you need in text!';
+        }
+      } else {
+        replyText = `I received your ${message.type} message! Currently I work best with text messages, voice notes, and images. Feel free to ask me anything!`;
+      }
+    } finally {
+      if (typingIntervalId) clearInterval(typingIntervalId);
     }
 
     // 6. Send response back to sender on WhatsApp
