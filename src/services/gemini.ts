@@ -14,6 +14,7 @@ import {
 } from './supabase';
 import { UserProfile } from '../types';
 import { isValidTimezone, getLocalTimeString } from '../utils/timezone';
+import { formatFriendlyDateTime, formatTaskList } from '../utils/formatting';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const ai = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
@@ -121,6 +122,10 @@ const addTaskDeclaration: FunctionDeclaration = {
         type: Type.STRING,
         description: 'Optional additional details about the task.',
       },
+      due_date_iso: {
+        type: Type.STRING,
+        description: 'Optional ISO 8601 UTC timestamp for when the task is due, computed from the user\'s local time the same way reminder times are. Omit if the user didn\'t give a deadline.',
+      },
     },
     required: ['title'],
   },
@@ -135,6 +140,12 @@ const getDailyPlanDeclaration: FunctionDeclaration = {
   },
 };
 
+export interface AssistantReply {
+  text: string;
+  /** Quick-reply buttons to show after the text (e.g. "View Daily Plan"), if any. */
+  buttons?: Array<{ id: string; title: string }>;
+}
+
 /**
  * Process incoming text, voice, or image message from a user through Gemini 2.0 Flash
  */
@@ -143,9 +154,9 @@ export async function processUserMessage(
   messageText?: string,
   mediaBuffer?: Buffer,
   mimeType?: string
-): Promise<string> {
+): Promise<AssistantReply> {
   if (!ai) {
-    return '⚠️ Gemini API Key is missing. Please set GEMINI_API_KEY in your environment.';
+    return { text: '⚠️ Gemini API Key is missing. Please set GEMINI_API_KEY in your environment.' };
   }
 
   try {
@@ -159,7 +170,7 @@ export async function processUserMessage(
     const nowISO = new Date().toISOString();
     const localTimeString = getLocalTimeString(timezone);
     const memoryContext = memories.map((m) => `- ${m.content}`).join('\n') || 'No previous memories stored.';
-    const taskContext = tasks.map((t) => `- ${t.title} [Status: ${t.status}]`).join('\n') || 'No active tasks.';
+    const taskContext = tasks.map((t) => `- ${t.title} [Status: ${t.status}]${t.due_date ? ` (due ${t.due_date})` : ''}`).join('\n') || 'No active tasks.';
     const reminderContext = pendingReminders
       .map((r) => `- "${r.message}" at ${r.remind_at}${r.recurrence ? ` (repeats ${r.recurrence})` : ''}`)
       .join('\n') || 'No active reminders.';
@@ -174,7 +185,7 @@ YOUR CAPABILITIES & INSTRUCTIONS:
 1. Speak naturally and concisely for WhatsApp. Use emojis, bold *text*, and short bullet points.
 2. You can set/cancel reminders (one-time or recurring), store memories/preferences, create/complete tasks, manage daily plans, and correct the user's timezone using your available tools.
 3. Automatically store key user details (hobbies, goals, family, preferences) into memory using \`save_memory\` tool without being explicitly asked if it seems useful for long-term helpfulness.
-4. When setting reminders, interpret times the user gives (e.g. "6pm", "tomorrow morning") relative to their Local Date & Time above, then convert to the equivalent UTC ISO timestamp for \`remind_at_iso\`. If the user asks for a repeating reminder ("every day", "weekly", etc.), set \`recurrence\` accordingly.
+4. When setting reminders, interpret times the user gives (e.g. "6pm", "tomorrow morning") relative to their Local Date & Time above, then convert to the equivalent UTC ISO timestamp for \`remind_at_iso\`. If the user asks for a repeating reminder ("every day", "weekly", etc.), set \`recurrence\` accordingly. If they give a task a deadline, set \`due_date_iso\` the same way.
 5. If the user mentions where they live, or corrects an assumption about their timezone, call \`set_timezone\` with the correct IANA name so future reminders stay accurate.
 6. When the user wants to cancel a reminder or complete a task, match it against the lists below and call the matching tool.
 7. If sent an image, actively read anything legible in it. If it contains questions, problems, forms, or instructions — answer or solve them directly, even with no caption; don't just describe the image when there's answerable content in it. Only fall back to a plain description if there's genuinely nothing to answer or act on.
@@ -257,6 +268,7 @@ ${reminderContext}`;
     // 4. Handle Tool / Function Calls
     let finalAnswer = response.text || '';
     const functionCalls = response.functionCalls;
+    const buttons: Array<{ id: string; title: string }> = [];
 
     if (functionCalls && functionCalls.length > 0) {
       for (const call of functionCalls) {
@@ -270,15 +282,18 @@ ${reminderContext}`;
           const recurrence = (args as any).recurrence as 'daily' | 'weekly' | 'monthly' | undefined;
           await createReminder(user.id, (args as any).message, (args as any).remind_at_iso, recurrence);
           const recurrenceNote = recurrence ? ` (repeats ${recurrence})` : '';
-          finalAnswer += `\n\n⏰ *Reminder set for:* ${(args as any).remind_at_iso}${recurrenceNote}`;
+          finalAnswer += `\n\n⏰ *Reminder set for:* ${formatFriendlyDateTime((args as any).remind_at_iso, timezone)}${recurrenceNote}`;
+          buttons.push({ id: 'view_reminders', title: '⏰ My Reminders' });
         } else if (name === 'cancel_reminder' && user.id) {
           const cancelledCount = await cancelReminderByMessage(user.id, (args as any).message_match);
           finalAnswer += cancelledCount > 0
             ? `\n\n🗑️ *Cancelled ${cancelledCount} reminder(s) matching* "${(args as any).message_match}"`
             : `\n\n⚠️ Couldn't find an active reminder matching "${(args as any).message_match}"`;
         } else if (name === 'add_task' && user.id) {
-          await createTask(user.id, (args as any).title, (args as any).description);
-          finalAnswer += `\n\n📋 *Added to daily plan:* ${(args as any).title}`;
+          await createTask(user.id, (args as any).title, (args as any).description, (args as any).due_date_iso);
+          const dueNote = (args as any).due_date_iso ? ` — due ${formatFriendlyDateTime((args as any).due_date_iso, timezone)}` : '';
+          finalAnswer += `\n\n📋 *Added to daily plan:* ${(args as any).title}${dueNote}`;
+          buttons.push({ id: 'view_tasks', title: '📋 Daily Plan' });
         } else if (name === 'complete_task' && user.id) {
           const completedCount = await completeTaskByTitle(user.id, (args as any).title_match);
           finalAnswer += completedCount > 0
@@ -286,10 +301,7 @@ ${reminderContext}`;
             : `\n\n⚠️ Couldn't find an active task matching "${(args as any).title_match}"`;
         } else if (name === 'get_daily_plan' && user.id) {
           const currentTasks = await getUserTasks(user.id);
-          const taskListStr = currentTasks.length > 0
-            ? currentTasks.map((t, idx) => `${idx + 1}. *${t.title}*`).join('\n')
-            : 'Your daily task list is currently empty!';
-          finalAnswer += `\n\n📋 *Your Current Daily Plan:*\n${taskListStr}`;
+          finalAnswer += `\n\n📋 *Your Current Daily Plan:*\n${formatTaskList(currentTasks, timezone)}`;
         } else if (name === 'set_timezone' && user.id) {
           const requestedTz = (args as any).iana_timezone as string;
           if (isValidTimezone(requestedTz)) {
@@ -310,9 +322,9 @@ ${reminderContext}`;
       await saveConversationMessage(user.id, 'model', finalAnswer);
     }
 
-    return finalAnswer;
+    return { text: finalAnswer, buttons: buttons.length > 0 ? buttons : undefined };
   } catch (error: any) {
     console.error('❌ Error processing message with Gemini:', error.message);
-    return 'Sorry, I ran into an error processing your request. Please try again!';
+    return { text: 'Sorry, I ran into an error processing your request. Please try again!' };
   }
 }

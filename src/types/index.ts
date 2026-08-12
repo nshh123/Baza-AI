@@ -51,7 +51,7 @@ export interface WhatsAppMessage {
   from: string; // Sender's phone number e.g. "15551234567"
   id: string;
   timestamp: string;
-  type: 'text' | 'audio' | 'image' | 'document' | 'unknown';
+  type: 'text' | 'audio' | 'image' | 'document' | 'interactive' | 'unknown';
   text?: {
     body: string;
   };
@@ -63,6 +63,13 @@ export interface WhatsAppMessage {
     id: string;
     mime_type: string;
     caption?: string;
+  };
+  interactive?: {
+    type: string;
+    button_reply?: {
+      id: string;
+      title: string;
+    };
   };
 }
 

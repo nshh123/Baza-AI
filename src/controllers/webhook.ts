@@ -1,9 +1,10 @@
 import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 import { WhatsAppWebhookPayload } from '../types';
-import { getOrCreateUser, claimMessageId } from '../services/supabase';
+import { getOrCreateUser, claimMessageId, getUserTasks, getUserPendingReminders } from '../services/supabase';
 import { processUserMessage } from '../services/gemini';
-import { sendWhatsAppMessage, getWhatsAppMediaBuffer } from '../services/whatsapp';
+import { sendWhatsAppMessage, sendWhatsAppButtons, getWhatsAppMediaBuffer } from '../services/whatsapp';
+import { formatTaskList, formatReminderList } from '../utils/formatting';
 
 const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || 'my_secret_whatsapp_verify_token_123';
 const META_APP_SECRET = process.env.META_APP_SECRET || '';
@@ -108,30 +109,50 @@ export async function handleWebhookEvent(req: Request, res: Response): Promise<v
     };
 
     let replyText = '';
+    let replyButtons: Array<{ id: string; title: string }> | undefined;
 
-    // 2. Process Text Messages
-    if (message.type === 'text' && message.text) {
-      const textContent = message.text.body;
-      replyText = await processUserMessage(user, textContent);
+    // 2. Process quick-reply button taps (handled deterministically, no Gemini call needed)
+    if (message.type === 'interactive' && message.interactive?.button_reply) {
+      const buttonId = message.interactive.button_reply.id;
+      const timezone = user.timezone || 'UTC';
+
+      if (buttonId === 'view_tasks' && user.id) {
+        const tasks = await getUserTasks(user.id);
+        replyText = `📋 *Your Current Daily Plan:*\n${formatTaskList(tasks, timezone)}`;
+      } else if (buttonId === 'view_reminders' && user.id) {
+        const reminders = await getUserPendingReminders(user.id);
+        replyText = `⏰ *Your Active Reminders:*\n${formatReminderList(reminders, timezone)}`;
+      }
     }
-    // 3. Process Voice Note Audio Messages
+    // 3. Process Text Messages
+    else if (message.type === 'text' && message.text) {
+      const textContent = message.text.body;
+      const result = await processUserMessage(user, textContent);
+      replyText = result.text;
+      replyButtons = result.buttons;
+    }
+    // 4. Process Voice Note Audio Messages
     else if (message.type === 'audio' && message.audio) {
       console.log(`🎙️ Downloading voice note media (ID: ${message.audio.id})...`);
       const mediaData = await getWhatsAppMediaBuffer(message.audio.id);
 
       if (mediaData) {
-        replyText = await processUserMessage(user, undefined, mediaData.buffer, mediaData.mimeType);
+        const result = await processUserMessage(user, undefined, mediaData.buffer, mediaData.mimeType);
+        replyText = result.text;
+        replyButtons = result.buttons;
       } else {
         replyText = '⚠️ Sorry, I could not process your voice note. Please try sending it again or type your message!';
       }
     }
-    // 4. Process Image Messages
+    // 5. Process Image Messages
     else if (message.type === 'image' && message.image) {
       console.log(`🖼️ Downloading image media (ID: ${message.image.id})...`);
       const mediaData = await getWhatsAppMediaBuffer(message.image.id);
 
       if (mediaData) {
-        replyText = await processUserMessage(user, message.image.caption, mediaData.buffer, mediaData.mimeType);
+        const result = await processUserMessage(user, message.image.caption, mediaData.buffer, mediaData.mimeType);
+        replyText = result.text;
+        replyButtons = result.buttons;
       } else {
         replyText = '⚠️ Sorry, I could not process your image. Please try sending it again or describe what you need in text!';
       }
@@ -139,9 +160,12 @@ export async function handleWebhookEvent(req: Request, res: Response): Promise<v
       replyText = `I received your ${message.type} message! Currently I work best with text messages, voice notes, and images. Feel free to ask me anything!`;
     }
 
-    // 5. Send response back to sender on WhatsApp
+    // 6. Send response back to sender on WhatsApp
     if (replyText) {
       await sendWhatsAppMessage(senderPhone, replyText);
+    }
+    if (replyButtons && replyButtons.length > 0) {
+      await sendWhatsAppButtons(senderPhone, 'Quick actions:', replyButtons);
     }
   } catch (error: any) {
     console.error('❌ Error handling WhatsApp webhook event:', error.message);

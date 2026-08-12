@@ -87,6 +87,56 @@ export async function sendWhatsAppMessage(toPhoneNumber: string, textContent: st
 }
 
 /**
+ * Send up to 3 quick-reply buttons attached to a short prompt (WhatsApp interactive
+ * message). Button titles are capped at 20 characters, WhatsApp's own limit.
+ */
+export async function sendWhatsAppButtons(
+  toPhoneNumber: string,
+  bodyText: string,
+  buttons: Array<{ id: string; title: string }>
+): Promise<boolean> {
+  try {
+    if (!META_WHATSAPP_TOKEN || !META_PHONE_NUMBER_ID) {
+      console.warn('⚠️ Meta WhatsApp credentials not fully configured in environment variables.');
+      return false;
+    }
+
+    const url = `https://graph.facebook.com/v21.0/${META_PHONE_NUMBER_ID}/messages`;
+
+    const response = await axios.post(
+      url,
+      {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: toPhoneNumber,
+        type: 'interactive',
+        interactive: {
+          type: 'button',
+          body: { text: bodyText },
+          action: {
+            buttons: buttons.slice(0, 3).map((b) => ({
+              type: 'reply',
+              reply: { id: b.id, title: b.title.slice(0, 20) },
+            })),
+          },
+        },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${META_WHATSAPP_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+    return response.status === 200 || response.status === 201;
+  } catch (error: any) {
+    console.error('❌ Error sending WhatsApp button message:', error?.response?.data || error.message);
+    return false;
+  }
+}
+
+/**
  * Download media content (like audio voice notes) from Meta servers
  */
 export async function getWhatsAppMediaBuffer(mediaId: string): Promise<{ buffer: Buffer; mimeType: string } | null> {
