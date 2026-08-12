@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import { getDueReminders, claimReminder, revertReminderToPending, rescheduleRecurringReminder } from './supabase';
 import { sendWhatsAppMessage, sendWhatsAppTemplate } from './whatsapp';
+import { checkAndSendDailyDigests } from './digest';
 
 /**
  * Check for due reminders and dispatch them over WhatsApp.
@@ -61,12 +62,24 @@ export async function checkAndDispatchReminders(): Promise<number> {
 }
 
 /**
- * Initialize background cron job to check and dispatch due reminders every minute.
+ * Runs both scheduled jobs — reminder dispatch and daily digests — in one tick.
+ * Called by both the internal cron and the external /cron/check-reminders endpoint.
+ */
+export async function runScheduledTasks(): Promise<{ remindersDispatched: number; digestsSent: number }> {
+  const [remindersDispatched, digestsSent] = await Promise.all([
+    checkAndDispatchReminders(),
+    checkAndSendDailyDigests(),
+  ]);
+  return { remindersDispatched, digestsSent };
+}
+
+/**
+ * Initialize background cron job to run scheduled tasks every minute.
  * This only fires while the process is actually running/awake — on a free-tier host
  * that sleeps when idle, /cron/check-reminders (triggered by an external scheduler)
- * is the mechanism that's actually relied on to keep reminders firing on time.
+ * is the mechanism that's actually relied on to keep things firing on time.
  */
 export function initScheduler(): void {
-  console.log('⏰ Reminder Scheduler initialized. Polling every minute...');
-  cron.schedule('* * * * *', checkAndDispatchReminders);
+  console.log('⏰ Scheduler initialized. Polling every minute...');
+  cron.schedule('* * * * *', runScheduledTasks);
 }

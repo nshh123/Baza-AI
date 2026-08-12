@@ -64,6 +64,34 @@ export async function updateUserTimezone(userId: string, timezone: string): Prom
 }
 
 /**
+ * All users with an id (used to check each one for a due daily digest).
+ */
+export async function getAllUsers(): Promise<UserProfile[]> {
+  if (!supabase) return [];
+  try {
+    const { data, error } = await supabase.from('users').select('*');
+    if (error) throw error;
+    return (data || []) as UserProfile[];
+  } catch (error: any) {
+    console.error('❌ Error fetching all users:', error.message);
+    return [];
+  }
+}
+
+/**
+ * Record that a user's daily digest was sent for a given local date, so they don't
+ * get a second one if the cron tick overlaps or re-checks within the same day.
+ */
+export async function markDigestSent(userId: string, localDate: string): Promise<void> {
+  if (!supabase) return;
+  try {
+    await supabase.from('users').update({ last_digest_date: localDate }).eq('id', userId);
+  } catch (error: any) {
+    console.error('❌ Error marking digest sent:', error.message);
+  }
+}
+
+/**
  * Save conversation message for user context memory
  */
 export async function saveConversationMessage(userId: string, role: 'user' | 'model', content: string): Promise<void> {

@@ -16,3 +16,21 @@ export function getLocalTimeString(timezone: string): string {
     return new Date().toISOString() + ' (UTC)';
   }
 }
+
+/**
+ * The current local date (YYYY-MM-DD) and hour (0-23) in the given timezone —
+ * used to decide "is it this user's local morning yet" without any date-math bugs
+ * around DST or fractional UTC offsets.
+ */
+export function getLocalDateAndHour(timezone: string): { date: string; hour: number } {
+  try {
+    const date = new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(new Date());
+    const hour = Number(
+      new Intl.DateTimeFormat('en-US', { timeZone: timezone, hour: 'numeric', hourCycle: 'h23' }).format(new Date())
+    );
+    return { date, hour };
+  } catch {
+    const now = new Date();
+    return { date: now.toISOString().slice(0, 10), hour: now.getUTCHours() };
+  }
+}

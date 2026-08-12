@@ -3,6 +3,7 @@ export interface UserProfile {
   phone_number: string;
   name?: string;
   timezone: string;
+  last_digest_date?: string | null;
   created_at: string;
 }
 

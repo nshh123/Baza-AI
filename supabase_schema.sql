@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS users (
     phone_number TEXT UNIQUE NOT NULL,
     name TEXT,
     timezone TEXT DEFAULT 'UTC',
+    last_digest_date TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
