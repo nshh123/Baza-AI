@@ -79,15 +79,29 @@ export async function getAllUsers(): Promise<UserProfile[]> {
 }
 
 /**
- * Record that a user's daily digest was sent for a given local date, so they don't
- * get a second one if the cron tick overlaps or re-checks within the same day.
+ * Atomically claim today's digest slot for a user before building/sending it, by
+ * conditionally flipping last_digest_date only if it isn't already today's date.
+ * Returns true if this call won the claim (safe to send), false if another
+ * concurrent run already claimed (or is claiming) today for this user.
  */
-export async function markDigestSent(userId: string, localDate: string): Promise<void> {
-  if (!supabase) return;
+export async function claimDigestSlot(userId: string, localDate: string): Promise<boolean> {
+  if (!supabase) return true;
   try {
-    await supabase.from('users').update({ last_digest_date: localDate }).eq('id', userId);
+    const { data, error } = await supabase
+      .from('users')
+      .update({ last_digest_date: localDate })
+      .eq('id', userId)
+      .or(`last_digest_date.is.null,last_digest_date.neq.${localDate}`)
+      .select('id');
+
+    if (error) {
+      console.error('❌ Error claiming digest slot:', error.message);
+      return false; // fail closed: better to skip today than risk a duplicate send
+    }
+    return !!(data && data.length > 0);
   } catch (error: any) {
-    console.error('❌ Error marking digest sent:', error.message);
+    console.error('❌ Error claiming digest slot:', error.message);
+    return false;
   }
 }
 

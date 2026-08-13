@@ -1,4 +1,4 @@
-import { getAllUsers, markDigestSent, getUserTasks, getUserPendingReminders } from './supabase';
+import { getAllUsers, claimDigestSlot, getUserTasks, getUserPendingReminders } from './supabase';
 import { sendWhatsAppMessage, sendWhatsAppTemplate } from './whatsapp';
 import { getLocalDateAndHour } from '../utils/timezone';
 import { formatTaskList, formatReminderList } from '../utils/formatting';
@@ -24,13 +24,15 @@ export async function checkAndSendDailyDigests(): Promise<number> {
     if (localHour !== DIGEST_HOUR) continue;
     if (user.last_digest_date === localDate) continue;
 
+    // Claim before doing any work so overlapping cron runs (e.g. cron-job.org
+    // triggers stacking up during a slow cold start) can't both send today's digest.
+    const claimed = await claimDigestSlot(user.id, localDate);
+    if (!claimed) continue;
+
     try {
       const [tasks, reminders] = await Promise.all([getUserTasks(user.id), getUserPendingReminders(user.id)]);
 
-      if (tasks.length === 0 && reminders.length === 0) {
-        await markDigestSent(user.id, localDate);
-        continue;
-      }
+      if (tasks.length === 0 && reminders.length === 0) continue;
 
       const sections: string[] = [];
       if (tasks.length > 0) sections.push(`📋 *Tasks:*\n${formatTaskList(tasks, timezone)}`);
@@ -49,8 +51,6 @@ export async function checkAndSendDailyDigests(): Promise<number> {
       } else {
         console.error(`❌ Failed to send daily digest to ${user.phone_number}`);
       }
-
-      await markDigestSent(user.id, localDate);
     } catch (error: any) {
       console.error(`❌ Error building/sending digest for ${user.phone_number}:`, error.message);
     }
