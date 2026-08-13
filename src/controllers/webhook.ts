@@ -109,8 +109,10 @@ export async function handleWebhookEvent(req: Request, res: Response): Promise<v
     // 25s on its own, but Gemini congestion can push replies well past that — so
     // refresh it every 20s (safely under the cap) for as long as we're still working.
     let typingIntervalId: NodeJS.Timeout | undefined;
+    let typingShownAt: number | undefined;
     if (message.type === 'text' || message.type === 'audio' || message.type === 'image') {
       await sendTypingIndicator(message.id);
+      typingShownAt = Date.now();
       typingIntervalId = setInterval(() => sendTypingIndicator(message.id), 20000);
     }
 
@@ -183,6 +185,18 @@ export async function handleWebhookEvent(req: Request, res: Response): Promise<v
       }
     } finally {
       if (typingIntervalId) clearInterval(typingIntervalId);
+    }
+
+    // On a very fast reply (e.g. to "hello"), the message can reach WhatsApp so soon
+    // after the typing indicator request that the client never gets to visibly render
+    // the animation -- the reply just pops in after an unnatural pause instead. Pad out
+    // to a minimum "typing" duration so there's always something to see first.
+    const MIN_TYPING_DISPLAY_MS = 1500;
+    if (typingShownAt !== undefined) {
+      const remaining = MIN_TYPING_DISPLAY_MS - (Date.now() - typingShownAt);
+      if (remaining > 0) {
+        await new Promise((resolve) => setTimeout(resolve, remaining));
+      }
     }
 
     // 6. Send response back to sender on WhatsApp

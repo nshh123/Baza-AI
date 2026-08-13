@@ -411,6 +411,15 @@ Fix: `await sendTypingIndicator(message.id)` for the initial call before any
 processing starts, guaranteeing it's registered with WhatsApp first regardless of how
 quickly the reply is generated. The 20s keep-alive interval is unchanged.
 
+Confirmed by the user this got the ordering right but exposed the next layer of the
+same problem: even *ordered* correctly, a reply generated in a few hundred ms still
+reached WhatsApp too soon after the indicator request for the client to visibly
+animate it — the reply just popped in after an unnaturally short pause. Added a
+`MIN_TYPING_DISPLAY_MS` (1500ms) floor: after processing finishes, if less than that
+has elapsed since the indicator was shown, wait out the remainder before sending the
+reply. Normal (slower) replies are unaffected since the floor has usually already
+elapsed by the time they're ready.
+
 ## Where things stand
 
 **Live and working in production** (Render, auto-deploying from `main`, no local
