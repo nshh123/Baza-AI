@@ -420,6 +420,24 @@ has elapsed since the indicator was shown, wait out the remainder before sending
 reply. Normal (slower) replies are unaffected since the floor has usually already
 elapsed by the time they're ready.
 
+## 23. Stray asterisks around bold text
+
+User spotted literal `*` characters sitting right next to bolded words in replies
+(e.g. `*Century Cinema*` rendering as bold *and* showing a stray asterisk). Cause:
+the system prompt tells Gemini to use WhatsApp's single-asterisk bold syntax, but as
+an LLM trained overwhelmingly on standard Markdown it still slips into `**bold**`
+sometimes, especially inside numbered lists. WhatsApp doesn't treat `**` as a unit —
+it pairs off the *innermost* single asterisks as the bold span and leaves the
+outermost pair as literal characters, so `**Century Cinema**` renders as a stray `*`
+immediately before/after a shorter bolded span. Nothing in the pipeline sanitized
+Gemini's raw output before it went straight to WhatsApp.
+
+Added `toWhatsAppFormatting()` in `utils/formatting.ts`: converts `**text**` and
+`__text__` to WhatsApp's `*text*` via regex, applied to `finalAnswer` in
+`gemini.ts` right before it's saved to conversation history and returned. Prompt
+instructions on the model are unreliable for formatting like this — normalizing the
+output is the fix that actually holds regardless of what the model emits.
+
 ## Where things stand
 
 **Live and working in production** (Render, auto-deploying from `main`, no local

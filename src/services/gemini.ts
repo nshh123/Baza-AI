@@ -14,7 +14,7 @@ import {
 } from './supabase';
 import { UserProfile } from '../types';
 import { isValidTimezone, getLocalTimeString } from '../utils/timezone';
-import { formatFriendlyDateTime, formatTaskList } from '../utils/formatting';
+import { formatFriendlyDateTime, formatTaskList, toWhatsAppFormatting } from '../utils/formatting';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const ai = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
@@ -346,6 +346,8 @@ ${reminderContext}`;
     if (!finalAnswer.trim()) {
       finalAnswer = 'I got your message! How else can I assist you today?';
     }
+
+    finalAnswer = toWhatsAppFormatting(finalAnswer);
 
     if (user.id) {
       await saveConversationMessage(user.id, 'model', finalAnswer);
