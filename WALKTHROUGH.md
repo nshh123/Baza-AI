@@ -438,6 +438,17 @@ Added `toWhatsAppFormatting()` in `utils/formatting.ts`: converts `**text**` and
 instructions on the model are unreliable for formatting like this — normalizing the
 output is the fix that actually holds regardless of what the model emits.
 
+Screenshots of a next reply showed the second half of the same root cause: nested
+Markdown bullets (`* Rwanda: ...` under a numbered heading) rendered as a literal
+`*` with the sub-item's bold heading tacked onto it, all left-aligned with no visual
+nesting — WhatsApp has no unordered-list syntax at all, so a bare `* ` marker is just
+a character to it, not a bullet, and any leading spaces the model used for
+indentation carried no visual weight either. Extended `toWhatsAppFormatting()` with a
+line-start regex (`^[ \t]*([*-])(?!\*)\s+`, run before the bold conversion so it
+doesn't get confused with `**`) that rewrites any Markdown `* `/`- ` list marker to a
+manually-indented `   • ` bullet, giving replies with nested lists actual visual
+structure instead of a wall of same-indent lines.
+
 ## Where things stand
 
 **Live and working in production** (Render, auto-deploying from `main`, no local

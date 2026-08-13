@@ -2,15 +2,22 @@ import { Task, Reminder } from '../types';
 
 /**
  * Gemini is instructed to use WhatsApp's single-asterisk bold syntax, but as an LLM
- * trained heavily on standard Markdown it still slips into double-delimiter bold
- * output sometimes (especially in lists). WhatsApp doesn't recognize double
- * delimiters as a unit — it pairs off the innermost single asterisks as bold and
- * leaves the outer ones as literal characters, e.g. "**Century Cinema**" renders as
- * a stray "*" immediately before/after a shorter bolded span. Normalize to
- * WhatsApp's syntax before sending so this never reaches the user.
+ * trained heavily on standard Markdown it still slips into standard Markdown output
+ * sometimes (especially in lists): double-delimiter bold, and "* "/"- " unordered
+ * list markers, neither of which WhatsApp understands as formatting. Double
+ * delimiters don't render as a unit — WhatsApp pairs off the innermost single
+ * asterisks as bold and leaves the outer ones as literal characters, e.g.
+ * "**Century Cinema**" renders as a stray "*" next to a shorter bolded span. And a
+ * bare "* " list marker just shows up as a literal asterisk with no indentation,
+ * since WhatsApp has no list syntax at all. Normalize both to WhatsApp's actual
+ * capabilities — "*text*" bold and a "•" bullet with manual indentation — before
+ * sending, since prompt instructions alone aren't reliable for this.
  */
 export function toWhatsAppFormatting(text: string): string {
-  return text.replace(/\*\*(.+?)\*\*/g, '*$1*').replace(/__(.+?)__/g, '*$1*');
+  return text
+    .replace(/^[ \t]*([*-])(?!\*)\s+/gm, '   • ')
+    .replace(/\*\*(.+?)\*\*/g, '*$1*')
+    .replace(/__(.+?)__/g, '*$1*');
 }
 
 /** Human-readable date/time in the user's timezone, e.g. "Wed, Aug 12, 6:00 PM". */
