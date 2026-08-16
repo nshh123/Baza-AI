@@ -90,34 +90,43 @@ export async function handleWebhookEvent(req: Request, res: Response): Promise<v
     if (!value || !value.messages || value.messages.length === 0) return;
 
     const message = value.messages[0];
+    if (!message || !message.id) return;
+
+    // Dispatch the typing indicator to Meta immediately at T+0ms for EVERY incoming message,
+    // before any console logging, DB queries, or media downloads take place.
+    const typingShownAt = Date.now();
+    const typingPromise = sendTypingIndicator(message.id);
+    const typingIntervalId = setInterval(() => sendTypingIndicator(message.id), 20000);
+
     const senderPhone = message.from;
     const contactName = value.contacts?.[0]?.profile?.name || 'Friend';
 
     console.log(`📩 Incoming message from ${contactName} (${senderPhone}) [Type: ${message.type}]`);
 
+    const mediaId = message.type === 'audio' && message.audio
+      ? message.audio.id
+      : message.type === 'image' && message.image
+        ? message.image.id
+        : undefined;
+
+    const claimPromise = claimMessageId(message.id);
+    const userPromise = getOrCreateUser(senderPhone, contactName);
+    const mediaPromise = mediaId ? getWhatsAppMediaBuffer(mediaId) : Promise.resolve(null);
+
+    const [_, isNewMessage, userResult, mediaData] = await Promise.all([
+      typingPromise,
+      claimPromise,
+      userPromise,
+      mediaPromise,
+    ]);
+
     // Skip duplicate deliveries (Meta retries webhooks it couldn't confirm were received)
-    const isNewMessage = await claimMessageId(message.id);
     if (!isNewMessage) {
+      if (typingIntervalId) clearInterval(typingIntervalId);
       console.log(`⏭️ Skipping duplicate webhook delivery for message ${message.id}`);
       return;
     }
 
-    // Show the typing indicator right away, before any processing below, so it's
-    // guaranteed to reach WhatsApp before the reply does — if this were fired off
-    // without waiting, a fast reply (e.g. to "hello") could reach the Graph API
-    // first and the indicator would never visibly appear. WhatsApp clears it after
-    // 25s on its own, but Gemini congestion can push replies well past that — so
-    // refresh it every 20s (safely under the cap) for as long as we're still working.
-    let typingIntervalId: NodeJS.Timeout | undefined;
-    let typingShownAt: number | undefined;
-    if (message.type === 'text' || message.type === 'audio' || message.type === 'image') {
-      await sendTypingIndicator(message.id);
-      typingShownAt = Date.now();
-      typingIntervalId = setInterval(() => sendTypingIndicator(message.id), 20000);
-    }
-
-    // 1. Fetch or register user in database
-    const userResult = await getOrCreateUser(senderPhone, contactName);
     const user = userResult?.profile || {
       id: '',
       phone_number: senderPhone,
@@ -157,9 +166,6 @@ export async function handleWebhookEvent(req: Request, res: Response): Promise<v
       }
       // 4. Process Voice Note Audio Messages
       else if (message.type === 'audio' && message.audio) {
-        console.log(`🎙️ Downloading voice note media (ID: ${message.audio.id})...`);
-        const mediaData = await getWhatsAppMediaBuffer(message.audio.id);
-
         if (mediaData) {
           const result = await processUserMessage(user, undefined, mediaData.buffer, mediaData.mimeType);
           replyText = result.text;
@@ -170,9 +176,6 @@ export async function handleWebhookEvent(req: Request, res: Response): Promise<v
       }
       // 5. Process Image Messages
       else if (message.type === 'image' && message.image) {
-        console.log(`🖼️ Downloading image media (ID: ${message.image.id})...`);
-        const mediaData = await getWhatsAppMediaBuffer(message.image.id);
-
         if (mediaData) {
           const result = await processUserMessage(user, message.image.caption, mediaData.buffer, mediaData.mimeType);
           replyText = result.text;
