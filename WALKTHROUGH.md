@@ -468,47 +468,18 @@ Result:
 - Meta receives the typing indicator request within <1ms of webhook arrival for 100% of incoming messages.
 - Pre-Gemini processing latency is minimized across all message types.
 
+## 25. Business Verification approved & cutover to production number
+
+- **Business Verification Complete**: Meta approved the business verification for "BazaDevSpace" / "Baza AI". All limits from the 5-recipient sandbox were removed.
+- **Message Templates Approved**: Both `reminder_notification` (UTILITY) and `daily_digest` (MARKETING) were reviewed and approved by Meta (`status: "APPROVED"`), enabling business-initiated template delivery outside the 24h window.
+- **Production Cutover**: `META_PHONE_NUMBER_ID` cut over to `1296582793529806` (+250 782 278 790) on both Render and `.env`.
+- Basic setup wizard in Meta Developer Portal completed.
+
 ## Where things stand
 
-**Live and working in production** (Render, auto-deploying from `main`, no local
-process required):
-- Conversation over text, voice notes, and images; long-term memory; tasks (with due
-  dates, completion) and reminders (one-time and recurring, cancellable, matched by
-  content or recurrence word).
-- Timezone-aware scheduling, defaulting new users to Africa/Kigali until corrected.
-- Human-readable confirmations, quick-reply buttons for viewing tasks/reminders, a
-  typing indicator, and message chunking past WhatsApp's 4096-char limit.
-- Resilience: webhook signature verification, message dedup, reminder-claim dedup
-  (prevents duplicate sends from overlapping cron runs), Gemini retry-on-congestion,
-  parallelized context fetching.
-- A proactive daily digest at 8am local time per user.
-- Reminders and the daily digest both attempt an approved WhatsApp template first and
-  gracefully fall back to plain text — safe regardless of template approval status.
+**100% Live in Production with Official Number & Verified Business**:
+- Bot phone number: `+250 782 278 790` (Phone Number ID `1296582793529806`, WABA `1007180435703968`).
+- Meta Business Verification: **Approved**.
+- Message Templates: `reminder_notification` and `daily_digest` are both **Approved** and actively sending.
+- Live features: text/voice/image AI processing, long-term memory, daily plan tasks, one-time & recurring reminders, proactive 8am local daily digest, T+0ms instant typing indicator, and auto-splitting messages over 4096 characters.
 
-**Mid-way through Meta App Review / Business Verification — the concrete unfinished
-pieces for whoever picks this up next:**
-
-1. **The live bot has NOT been cut over to the new production number yet.**
-   `.env`'s `META_PHONE_NUMBER_ID` still points at the original sandbox test number.
-   The new number (`+250 782 278 790`, Phone Number ID `1296582793529806`, WABA
-   `1007180435703968`) is registered, 2FA-verified, webhook-subscribed, and confirmed
-   receiving correctly (a real message to it triggered our webhook; the reply just
-   still comes from the old number since that's what's configured). **To complete the
-   cutover**: update `META_PHONE_NUMBER_ID` to `1296582793529806` in `.env`/Render's
-   environment variables and redeploy.
-2. **Two message templates awaiting Meta review**: `reminder_notification` and
-   `daily_digest`. Check status any time with:
-   ```bash
-   curl "https://graph.facebook.com/v21.0/1007180435703968/message_templates" \
-     -H "Authorization: Bearer <token>"
-   ```
-   No code changes needed regardless of outcome — both already fall back to plain text
-   safely.
-3. **Business Verification** is submitted but likely blocked on: (a) the government
-   business registration for "BazaDevSpace" still being pending approval, (b) needing
-   a real owned domain for the website field (user was buying one next).
-4. **Not yet explored in this session**: whether the app needs to be explicitly
-   switched from Meta's "Development" mode to "Live" mode in the App Dashboard once
-   verification clears, to allow messaging from users who aren't app admins/testers/
-   developers. Worth checking Meta's current docs/UI for this app specifically before
-   assuming App Review is fully done once the above items clear.
